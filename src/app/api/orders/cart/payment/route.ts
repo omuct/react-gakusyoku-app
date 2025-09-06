@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 import { CartItem } from "@/app/_types/cart";
-import { generateOrderNumber } from "@/app/_utils/generateOrderNumber";
+import { generateOrderNumber } from "@/app/_utils/orderNumberGenerator";
 import { sendOrderConfirmationEmail } from "@/app/_utils/sendOrderEmail";
 
 // 支払い処理
@@ -12,7 +12,8 @@ export async function POST(request: NextRequest) {
 
   try {
     // 注文番号を生成
-    const order_number = await generateOrderNumber();
+    // storeIdをbodyから取得し、注文番号生成に渡す
+    const order_number = await generateOrderNumber(body.storeId);
 
     // 注文データを作成
     const orderData = {

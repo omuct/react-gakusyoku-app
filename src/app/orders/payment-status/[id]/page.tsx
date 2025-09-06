@@ -154,12 +154,45 @@ function PaymentStatusContent() {
         throw new Error("セッションが見つかりません");
       }
 
+      // 店舗ID取得（cartItemsから）
+      let storeId = null;
+      if (paymentInfo.cartItems && paymentInfo.cartItems.length > 0) {
+        const { data: foodData } = await supabase
+          .from("foods")
+          .select("store_name")
+          .eq("id", paymentInfo.cartItems[0].food_id)
+          .single();
+        if (foodData) {
+          const { data: storeData } = await supabase
+            .from("stores")
+            .select("id")
+            .eq("name", foodData.store_name)
+            .single();
+          if (storeData) {
+            storeId = storeData.id;
+          }
+        }
+      }
+
+      // 注文番号生成
+      let order_number = null;
+      if (storeId) {
+        const { generateOrderNumber } = await import(
+          "@/app/_utils/orderNumberGenerator"
+        );
+        order_number = await generateOrderNumber(storeId);
+      } else {
+        // fallback: タイムスタンプ
+        order_number = `ORD${Date.now().toString().slice(-8)}`;
+      }
+
       const orderData = {
         user_id: session.user.id,
         total_amount: paymentInfo.amount,
         discount_amount: 0,
         payment_method: "paypay",
-        payment_status: "completed",
+        status: "pending",
+        order_number,
         created_at: new Date().toISOString(),
       };
 
@@ -171,25 +204,77 @@ function PaymentStatusContent() {
 
       if (orderError) throw orderError;
 
-      const orderItems = paymentInfo.cartItems.map((item: any) => ({
+      // 注文詳細保存
+      const orderDetails = paymentInfo.cartItems.map((item: any) => ({
         order_id: order.id,
         food_id: item.food_id,
-        quantity: item.quantity,
+        name: item.name,
         price: item.price,
+        quantity: item.quantity,
         size: item.size,
         is_takeout: item.is_takeout,
+        amount: item.total_price,
       }));
 
-      const { error: itemsError } = await supabase
-        .from("order_items")
-        .insert(orderItems);
-      if (itemsError) throw itemsError;
+      const { error: detailsError } = await supabase
+        .from("order_details")
+        .insert(orderDetails);
+      if (detailsError) throw detailsError;
 
+      // カート削除
       const { error: cartError } = await supabase
         .from("cart")
         .delete()
         .eq("user_id", session.user.id);
       if (cartError) throw cartError;
+
+      // メール送信処理
+      try {
+        const userEmail = session.user.email;
+        const userName =
+          session.user.user_metadata?.name ||
+          session.user.email?.split("@")[0] ||
+          "お客様";
+
+        if (userEmail) {
+          const { sendOrderConfirmationEmail } = await import(
+            "@/app/_utils/sendOrderEmail"
+          );
+          const emailOrderItems = paymentInfo.cartItems.map((item: any) => ({
+            id: item.food_id,
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+          }));
+
+          const emailResult = await sendOrderConfirmationEmail({
+            to: userEmail,
+            orderId: order.id,
+            orderNumber: order_number,
+            customerName: userName,
+            orderItems: emailOrderItems,
+            totalAmount: paymentInfo.amount,
+            orderDate: new Date().toLocaleDateString("ja-JP"),
+          });
+
+          if (!emailResult.success) {
+            console.error(
+              "Failed to send confirmation email:",
+              emailResult.error
+            );
+          } else {
+            console.log(
+              "Order confirmation email sent successfully to:",
+              userEmail
+            );
+          }
+        } else {
+          console.log("No email address found for user");
+        }
+      } catch (emailError) {
+        console.error("Error during email process:", emailError);
+        // メール送信の失敗は注文処理に影響しない
+      }
 
       localStorage.removeItem("paypay_payment_data");
       console.log("注文作成完了:", order);
